@@ -242,47 +242,25 @@ def print_batch_summary(batch_results: Dict[str, Any]):
                       f"表格:{result['statistics']['table_blocks']}, "
                       f"图像:{result['statistics']['image_blocks']})")
 
-def estimate_tokens(text: str) -> int:
+def estimate_text_length(text: str) -> int:
     """
-    估算文本的token数量
+    计算文本的字符长度
 
     Args:
         text: 输入文本
 
     Returns:
-        估算的token数量
+        文本的字符长度
     """
-    if not text:
-        return 0
+    return len(text) if text else 0
 
-    # 简单估算方法：
-    # 1. 对于英文：一个单词 ≈ 1.3个tokens
-    # 2. 对于中文：一个汉字 ≈ 2个tokens
-    # 3. 对于标点符号和数字：每个字符 ≈ 0.5个tokens
-
-    # 统计中文字符
-    chinese_chars = len(re.findall(r'[一-鿿]', text))
-
-    # 统计英文字符（排除中文字符）
-    english_text = re.sub(r'[一-鿿]', '', text)
-    # 简单的单词分割：按空格和非字母数字字符分割
-    english_words = re.findall(r'\b\w+\b', english_text)
-
-    # 统计其他字符（标点、数字等）
-    other_chars = len(text) - chinese_chars - sum(len(word) for word in english_words)
-
-    # 计算token估算
-    tokens = chinese_chars * 2 + len(english_words) * 1.3 + other_chars * 0.5
-
-    return int(tokens + 0.5)  # 四舍五入到最接近的整数
-
-def merge_blocks_to_chunks(blocks: List[Dict[str, Any]], max_tokens_per_chunk: int = 400) -> List[Dict[str, Any]]:
+def merge_blocks_to_chunks(blocks: List[Dict[str, Any]], max_chars_per_chunk: int = 800) -> List[Dict[str, Any]]:
     """
     将blocks合并为chunks
 
     Args:
         blocks: 原始blocks列表
-        max_tokens_per_chunk: 每个chunk的最大token数
+        max_chars_per_chunk: 每个chunk的最大字符数
 
     Returns:
         合并后的chunks列表
@@ -290,7 +268,7 @@ def merge_blocks_to_chunks(blocks: List[Dict[str, Any]], max_tokens_per_chunk: i
     chunks = []
     current_page = None
     current_text_chunk = []
-    current_chunk_tokens = 0
+    current_chunk_chars = 0
 
     # 按页面和顺序处理blocks
     for block in blocks:
@@ -304,14 +282,14 @@ def merge_blocks_to_chunks(blocks: List[Dict[str, Any]], max_tokens_per_chunk: i
                 "type": "text",
                 "page": current_page,
                 "content": chunk_content,
-                "token_count": current_chunk_tokens,
+                "char_count": current_chunk_chars,
                 "block_count": len(current_text_chunk),
                 "block_indices": [i for i, b in enumerate(blocks) if b in current_text_chunk],
                 "blocks": current_text_chunk
             }
             chunks.append(chunk)
             current_text_chunk = []
-            current_chunk_tokens = 0
+            current_chunk_chars = 0
 
         current_page = page
 
@@ -320,17 +298,17 @@ def merge_blocks_to_chunks(blocks: List[Dict[str, Any]], max_tokens_per_chunk: i
 
         if block_type == "text":
             text_content = block.get("content", "")
-            text_tokens = estimate_tokens(text_content)
+            text_chars = estimate_text_length(text_content)
 
             # 如果当前chunk为空，直接添加
             if not current_text_chunk:
                 current_text_chunk.append(block)
-                current_chunk_tokens = text_tokens
-            # 如果添加当前block后不超过最大token数，添加到当前chunk
-            elif current_chunk_tokens + text_tokens <= max_tokens_per_chunk:
+                current_chunk_chars = text_chars
+            # 如果添加当前block后不超过最大字符数，添加到当前chunk
+            elif current_chunk_chars + text_chars <= max_chars_per_chunk:
                 current_text_chunk.append(block)
-                current_chunk_tokens += text_tokens
-            # 如果超过最大token数，完成当前chunk并开始新的chunk
+                current_chunk_chars += text_chars
+            # 如果超过最大字符数，完成当前chunk并开始新的chunk
             else:
                 # 完成当前chunk
                 chunk_content = " ".join([b["content"] for b in current_text_chunk])
@@ -338,7 +316,7 @@ def merge_blocks_to_chunks(blocks: List[Dict[str, Any]], max_tokens_per_chunk: i
                     "type": "text",
                     "page": page,
                     "content": chunk_content,
-                    "token_count": current_chunk_tokens,
+                    "char_count": current_chunk_chars,
                     "block_count": len(current_text_chunk),
                     "block_indices": [i for i, b in enumerate(blocks) if b in current_text_chunk],
                     "blocks": current_text_chunk
@@ -347,7 +325,7 @@ def merge_blocks_to_chunks(blocks: List[Dict[str, Any]], max_tokens_per_chunk: i
 
                 # 开始新的chunk
                 current_text_chunk = [block]
-                current_chunk_tokens = text_tokens
+                current_chunk_chars = text_chars
 
         elif block_type == "table":
             # 完成当前的text chunk（如果有）
@@ -357,14 +335,14 @@ def merge_blocks_to_chunks(blocks: List[Dict[str, Any]], max_tokens_per_chunk: i
                     "type": "text",
                     "page": page,
                     "content": chunk_content,
-                    "token_count": current_chunk_tokens,
+                    "char_count": current_chunk_chars,
                     "block_count": len(current_text_chunk),
                     "block_indices": [i for i, b in enumerate(blocks) if b in current_text_chunk],
                     "blocks": current_text_chunk
                 }
                 chunks.append(chunk)
                 current_text_chunk = []
-                current_chunk_tokens = 0
+                current_chunk_chars = 0
 
             # 创建table chunk
             table_content = block.get("content", [])
@@ -375,14 +353,14 @@ def merge_blocks_to_chunks(blocks: List[Dict[str, Any]], max_tokens_per_chunk: i
                     row_text = " | ".join([str(cell) if cell is not None else "" for cell in row])
                     table_text += row_text + "\n"
 
-            table_tokens = estimate_tokens(table_text)
+            table_chars = estimate_text_length(table_text)
             chunk = {
                 "type": "table",
                 "page": page,
                 "table_index": block.get("table_index", 0),
                 "content": table_content,
                 "text_content": table_text.strip(),
-                "token_count": table_tokens,
+                "char_count": table_chars,
                 "block_indices": [blocks.index(block)],
                 "blocks": [block],
                 "metadata": block.get("metadata", {})
@@ -397,14 +375,14 @@ def merge_blocks_to_chunks(blocks: List[Dict[str, Any]], max_tokens_per_chunk: i
                     "type": "text",
                     "page": page,
                     "content": chunk_content,
-                    "token_count": current_chunk_tokens,
+                    "char_count": current_chunk_chars,
                     "block_count": len(current_text_chunk),
                     "block_indices": [i for i, b in enumerate(blocks) if b in current_text_chunk],
                     "blocks": current_text_chunk
                 }
                 chunks.append(chunk)
                 current_text_chunk = []
-                current_chunk_tokens = 0
+                current_chunk_chars = 0
 
             # 创建image chunk
             chunk = {
@@ -412,7 +390,7 @@ def merge_blocks_to_chunks(blocks: List[Dict[str, Any]], max_tokens_per_chunk: i
                 "page": page,
                 "image_index": block.get("image_index", 0),
                 "content": f"图像: {block.get('metadata', {}).get('name', '未命名')}",
-                "token_count": 10,  # 图像chunk固定token数
+                "char_count": 10,  # 图像chunk固定字符数
                 "block_indices": [blocks.index(block)],
                 "blocks": [block],
                 "metadata": block.get("metadata", {})
@@ -426,7 +404,7 @@ def merge_blocks_to_chunks(blocks: List[Dict[str, Any]], max_tokens_per_chunk: i
             "type": "text",
             "page": current_page if current_page else 1,
             "content": chunk_content,
-            "token_count": current_chunk_tokens,
+            "char_count": current_chunk_chars,
             "block_count": len(current_text_chunk),
             "block_indices": [i for i, b in enumerate(blocks) if b in current_text_chunk],
             "blocks": current_text_chunk
@@ -435,13 +413,13 @@ def merge_blocks_to_chunks(blocks: List[Dict[str, Any]], max_tokens_per_chunk: i
 
     return chunks
 
-def process_pdf_with_chunks(pdf_path: str, max_tokens_per_chunk: int = 400) -> Dict[str, Any]:
+def process_pdf_with_chunks(pdf_path: str, max_chars_per_chunk: int = 800) -> Dict[str, Any]:
     """
     处理PDF文件并生成chunks
 
     Args:
         pdf_path: PDF文件路径
-        max_tokens_per_chunk: 每个chunk的最大token数
+        max_chars_per_chunk: 每个chunk的最大字符数
 
     Returns:
         包含chunks的字典
@@ -453,7 +431,7 @@ def process_pdf_with_chunks(pdf_path: str, max_tokens_per_chunk: int = 400) -> D
         return result
 
     # 合并blocks为chunks
-    chunks = merge_blocks_to_chunks(result["blocks"], max_tokens_per_chunk)
+    chunks = merge_blocks_to_chunks(result["blocks"], max_chars_per_chunk)
 
     # 统计信息
     text_chunks = [c for c in chunks if c["type"] == "text"]
@@ -467,8 +445,8 @@ def process_pdf_with_chunks(pdf_path: str, max_tokens_per_chunk: int = 400) -> D
         "text_chunks": len(text_chunks),
         "table_chunks": len(table_chunks),
         "image_chunks": len(image_chunks),
-        "total_tokens": sum(c.get("token_count", 0) for c in chunks),
-        "avg_tokens_per_chunk": sum(c.get("token_count", 0) for c in chunks) / len(chunks) if chunks else 0
+        "total_chars": sum(c.get("char_count", 0) for c in chunks),
+        "avg_chars_per_chunk": sum(c.get("char_count", 0) for c in chunks) / len(chunks) if chunks else 0
     }
 
     return result
@@ -495,8 +473,8 @@ def print_chunk_summary(results: Dict[str, Any]):
     print(f"文本chunks: {stats.get('text_chunks', 0)}")
     print(f"表格chunks: {stats.get('table_chunks', 0)}")
     print(f"图像chunks: {stats.get('image_chunks', 0)}")
-    print(f"总tokens: {stats.get('total_tokens', 0)}")
-    print(f"平均tokens/chunk: {stats.get('avg_tokens_per_chunk', 0):.1f}")
+    print(f"总字符数: {stats.get('total_chars', 0)}")
+    print(f"平均字符数/chunk: {stats.get('avg_chars_per_chunk', 0):.1f}")
     print("="*60)
 
     # 显示前几个chunks作为示例
@@ -504,18 +482,139 @@ def print_chunk_summary(results: Dict[str, Any]):
     for i, chunk in enumerate(results["chunks"][:5]):
         chunk_type = chunk["type"]
         page = chunk["page"]
-        token_count = chunk.get("token_count", 0)
+        char_count = chunk.get("char_count", 0)
 
         if chunk_type == "text":
             content_preview = chunk["content"][:100] + "..." if len(chunk["content"]) > 100 else chunk["content"]
-            print(f"  {i+1}. [文本] 页{page}, {token_count}tokens: '{content_preview}'")
+            print(f"  {i+1}. [文本] 页{page}, {char_count}字符: '{content_preview}'")
         elif chunk_type == "table":
             rows = len(chunk["content"]) if chunk["content"] else 0
             cols = len(chunk["content"][0]) if chunk["content"] and chunk["content"][0] else 0
-            print(f"  {i+1}. [表格] 页{page}, {rows}行×{cols}列, {token_count}tokens")
+            print(f"  {i+1}. [表格] 页{page}, {rows}行×{cols}列, {char_count}字符")
         elif chunk_type == "image":
             image_name = chunk.get("metadata", {}).get("name", "未命名")
-            print(f"  {i+1}. [图像] 页{page}, {image_name}, {token_count}tokens")
+            print(f"  {i+1}. [图像] 页{page}, {image_name}, {char_count}字符")
+
+def batch_process_pdfs_with_chunks(pdf_dir: str, pattern: str = "*.pdf", max_chars_per_chunk: int = 800) -> Dict[str, Any]:
+    """
+    批量处理PDF文件并生成chunks
+
+    Args:
+        pdf_dir: PDF文件目录
+        pattern: 文件匹配模式
+        max_chars_per_chunk: 每个chunk的最大字符数
+
+    Returns:
+        包含所有处理结果的字典
+    """
+    pdf_files = glob.glob(os.path.join(pdf_dir, pattern))
+    pdf_files.sort()  # 按文件名排序
+
+    if not pdf_files:
+        print(f"在目录 {pdf_dir} 中没有找到匹配 {pattern} 的PDF文件")
+        return {"error": f"No PDF files found in {pdf_dir} matching {pattern}"}
+
+    print(f"找到 {len(pdf_files)} 个PDF文件:")
+    for i, pdf_file in enumerate(pdf_files, 1):
+        print(f"  {i}. {os.path.basename(pdf_file)}")
+
+    all_results = {}
+    total_summary = {
+        "total_files": len(pdf_files),
+        "processed_files": 0,
+        "failed_files": 0,
+        "total_pages": 0,
+        "total_blocks": 0,
+        "total_chunks": 0,
+        "total_text_chunks": 0,
+        "total_table_chunks": 0,
+        "total_image_chunks": 0,
+        "total_chars": 0
+    }
+
+    print("\n" + "="*60)
+    print("开始批量处理PDF文件并生成chunks")
+    print("="*60)
+
+    for pdf_file in pdf_files:
+        filename = os.path.basename(pdf_file)
+        print(f"\n处理文件: {filename}")
+
+        # 使用chunks处理函数
+        result = process_pdf_with_chunks(pdf_file, max_chars_per_chunk)
+
+        if "error" in result:
+            print(f"  ✗ 处理失败: {result['error']}")
+            all_results[filename] = {"error": result["error"]}
+            total_summary["failed_files"] += 1
+        else:
+            print(f"  ✓ 处理成功")
+            all_results[filename] = result
+            total_summary["processed_files"] += 1
+            total_summary["total_pages"] += result["total_pages"]
+            total_summary["total_blocks"] += result["total_blocks"]
+
+            # 添加chunks统计信息
+            if "chunk_statistics" in result:
+                stats = result["chunk_statistics"]
+                total_summary["total_chunks"] += stats.get("total_chunks", 0)
+                total_summary["total_text_chunks"] += stats.get("text_chunks", 0)
+                total_summary["total_table_chunks"] += stats.get("table_chunks", 0)
+                total_summary["total_image_chunks"] += stats.get("image_chunks", 0)
+                total_summary["total_chars"] += stats.get("total_chars", 0)
+
+    print("\n" + "="*60)
+    print("批量处理完成")
+    print("="*60)
+
+    return {
+        "batch_summary": total_summary,
+        "results": all_results
+    }
+
+def print_batch_chunks_summary(batch_results: Dict[str, Any]):
+    """
+    打印批量处理chunks结果的摘要
+
+    Args:
+        batch_results: 批量处理结果
+    """
+    if "error" in batch_results:
+        print(f"批量处理错误: {batch_results['error']}")
+        return
+
+    summary = batch_results["batch_summary"]
+
+    print("\n" + "="*60)
+    print("批量处理Chunks结果摘要")
+    print("="*60)
+    print(f"总文件数: {summary['total_files']}")
+    print(f"成功处理: {summary['processed_files']}")
+    print(f"处理失败: {summary['failed_files']}")
+    print(f"总页数: {summary['total_pages']}")
+    print(f"总块数: {summary['total_blocks']}")
+    print(f"总chunks数: {summary['total_chunks']}")
+    print(f"文本chunks总数: {summary['total_text_chunks']}")
+    print(f"表格chunks总数: {summary['total_table_chunks']}")
+    print(f"图像chunks总数: {summary['total_image_chunks']}")
+    print(f"总字符数: {summary['total_chars']}")
+    if summary['total_chunks'] > 0:
+        print(f"平均字符数/chunk: {summary['total_chars'] / summary['total_chunks']:.1f}")
+    print("="*60)
+
+    # 打印每个文件的简要信息
+    if "results" in batch_results:
+        print("\n各文件详情:")
+        for filename, result in batch_results["results"].items():
+            if "error" in result:
+                print(f"  {filename}: 失败 - {result['error']}")
+            else:
+                stats = result.get("chunk_statistics", {})
+                print(f"  {filename}: {result['total_pages']}页, {result['total_blocks']}块, "
+                      f"{stats.get('total_chunks', 0)}chunks "
+                      f"(文本:{stats.get('text_chunks', 0)}, "
+                      f"表格:{stats.get('table_chunks', 0)}, "
+                      f"图像:{stats.get('image_chunks', 0)})")
 
 def main():
     """主函数"""
@@ -554,7 +653,7 @@ def main():
     # 测试chunk合并功能
     test_pdf = "GEA/1.pdf"
     if os.path.exists(test_pdf):
-        chunk_result = process_pdf_with_chunks(test_pdf, max_tokens_per_chunk=400)
+        chunk_result = process_pdf_with_chunks(test_pdf, max_chars_per_chunk=800)
         print_chunk_summary(chunk_result)
 
         # 保存chunk结果
@@ -564,6 +663,28 @@ def main():
     else:
         print(f"测试文件不存在: {test_pdf}")
 
+    print("\n" + "="*60)
+    print("批量Chunk合并处理 - 处理所有PDF文件")
+    print("="*60)
+
+    # 批量处理所有PDF文件并生成chunks
+    batch_chunks_results = batch_process_pdfs_with_chunks("GEA", "*.pdf", max_chars_per_chunk=800)
+
+    # 打印批量处理chunks摘要
+    print_batch_chunks_summary(batch_chunks_results)
+
+    # 保存批量处理chunks结果到JSON文件
+    if "error" not in batch_chunks_results:
+        save_results_to_json(batch_chunks_results, "gea_pdf_batch_chunks_results.json")
+
+        # 为每个文件单独保存chunks结果
+        if "results" in batch_chunks_results:
+            for filename, result in batch_chunks_results["results"].items():
+                if "error" not in result:
+                    # 为每个文件创建单独的chunks JSON文件
+                    output_filename = f"gea_{filename.replace('.pdf', '')}_chunks_results.json"
+                    save_results_to_json(result, output_filename)
+                    print(f"  ✓ {filename} chunks结果已保存到: {output_filename}")
+
 if __name__ == "__main__":
     main()
-

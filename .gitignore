@@ -12,3 +12,7 @@ venv/
 # Neovim 临时文件
 *.swp
 .netrwhist
+
+# 生成的JSON文件
+*_results.json
+*_chunks_results.json
