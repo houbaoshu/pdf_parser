@@ -1,0 +1,14 @@
+# 编译产物
+*.o
+*.out
+*.exe
+# 具体的编译结果文件名（如果你用 g++ -o main）
+main
+GEA/
+venv/
+# Mac 系统文件
+.DS_Store
+
+# Neovim 临时文件
+*.swp
+.netrwhist
