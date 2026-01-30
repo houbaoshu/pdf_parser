@@ -2,15 +2,26 @@
 # -*- coding: utf-8 -*-
 """
 PDF解析器
-支持批量处理多个PDF文件
+支持批量处理多个PDF文件，并集成本地embedding功能
+使用bge-base-zh-v1.5等本地模型
 """
 
 import pdfplumber
 import json
 import os
 import glob
-import re
-from typing import List, Dict, Any, Tuple
+import sys
+from typing import List, Dict, Any, Optional
+
+# 添加embedding服务模块
+try:
+    from embedding_service import create_embedding_service, EmbeddingConfig, EmbeddingModel
+    EMBEDDING_AVAILABLE = True
+except ImportError:
+    EMBEDDING_AVAILABLE = False
+    print("警告: embedding_service模块未找到，embedding功能将不可用")
+    print("请确保embedding_service.py文件存在，或运行: pip install torch transformers sentence-transformers")
+
 
 def extract_pdf_content(pdf_path: str) -> Dict[str, Any]:
     """
@@ -116,6 +127,7 @@ def extract_pdf_content(pdf_path: str) -> Dict[str, Any]:
         print(f"解析PDF时发生错误: {str(e)}")
         return {"error": str(e)}
 
+
 def save_results_to_json(results: Dict[str, Any], output_path: str):
     """将结果保存为JSON文件"""
     try:
@@ -125,122 +137,6 @@ def save_results_to_json(results: Dict[str, Any], output_path: str):
     except Exception as e:
         print(f"保存结果时发生错误: {str(e)}")
 
-def print_summary(results: Dict[str, Any]):
-    """打印提取结果的摘要"""
-    if "error" in results:
-        print(f"错误: {results['error']}")
-        return
-
-    print("\n" + "="*50)
-    print("PDF解析结果摘要")
-    print("="*50)
-    print(f"PDF文件: {results['pdf_path']}")
-    print(f"总页数: {results['total_pages']}")
-    print(f"总块数: {results['total_blocks']}")
-    print(f"文本块: {results['statistics']['text_blocks']}")
-    print(f"表格块: {results['statistics']['table_blocks']}")
-    print(f"图像块: {results['statistics']['image_blocks']}")
-    print("="*50)
-
-def batch_process_pdfs(pdf_dir: str, pattern: str = "*.pdf") -> Dict[str, Any]:
-    """
-    批量处理PDF文件
-
-    Args:
-        pdf_dir: PDF文件目录
-        pattern: 文件匹配模式
-
-    Returns:
-        包含所有处理结果的字典
-    """
-    pdf_files = glob.glob(os.path.join(pdf_dir, pattern))
-    pdf_files.sort()  # 按文件名排序
-
-    if not pdf_files:
-        print(f"在目录 {pdf_dir} 中没有找到匹配 {pattern} 的PDF文件")
-        return {"error": f"No PDF files found in {pdf_dir} matching {pattern}"}
-
-    print(f"找到 {len(pdf_files)} 个PDF文件:")
-    for i, pdf_file in enumerate(pdf_files, 1):
-        print(f"  {i}. {os.path.basename(pdf_file)}")
-
-    all_results = {}
-    total_summary = {
-        "total_files": len(pdf_files),
-        "processed_files": 0,
-        "failed_files": 0,
-        "total_pages": 0,
-        "total_blocks": 0,
-        "total_text_blocks": 0,
-        "total_table_blocks": 0,
-        "total_image_blocks": 0
-    }
-
-    print("\n" + "="*60)
-    print("开始批量处理PDF文件")
-    print("="*60)
-
-    for pdf_file in pdf_files:
-        filename = os.path.basename(pdf_file)
-        print(f"\n处理文件: {filename}")
-
-        result = extract_pdf_content(pdf_file)
-
-        if "error" in result:
-            print(f"  ✗ 处理失败: {result['error']}")
-            all_results[filename] = {"error": result["error"]}
-            total_summary["failed_files"] += 1
-        else:
-            print(f"  ✓ 处理成功")
-            all_results[filename] = result
-            total_summary["processed_files"] += 1
-            total_summary["total_pages"] += result["total_pages"]
-            total_summary["total_blocks"] += result["total_blocks"]
-            total_summary["total_text_blocks"] += result["statistics"]["text_blocks"]
-            total_summary["total_table_blocks"] += result["statistics"]["table_blocks"]
-            total_summary["total_image_blocks"] += result["statistics"]["image_blocks"]
-
-    print("\n" + "="*60)
-    print("批量处理完成")
-    print("="*60)
-
-    return {
-        "batch_summary": total_summary,
-        "results": all_results
-    }
-
-def print_batch_summary(batch_results: Dict[str, Any]):
-    """打印批量处理结果的摘要"""
-    if "error" in batch_results:
-        print(f"批量处理错误: {batch_results['error']}")
-        return
-
-    summary = batch_results["batch_summary"]
-
-    print("\n" + "="*60)
-    print("批量处理结果摘要")
-    print("="*60)
-    print(f"总文件数: {summary['total_files']}")
-    print(f"成功处理: {summary['processed_files']}")
-    print(f"处理失败: {summary['failed_files']}")
-    print(f"总页数: {summary['total_pages']}")
-    print(f"总块数: {summary['total_blocks']}")
-    print(f"文本块总数: {summary['total_text_blocks']}")
-    print(f"表格块总数: {summary['total_table_blocks']}")
-    print(f"图像块总数: {summary['total_image_blocks']}")
-    print("="*60)
-
-    # 打印每个文件的简要信息
-    if "results" in batch_results:
-        print("\n各文件详情:")
-        for filename, result in batch_results["results"].items():
-            if "error" in result:
-                print(f"  {filename}: 失败 - {result['error']}")
-            else:
-                print(f"  {filename}: {result['total_pages']}页, {result['total_blocks']}块 "
-                      f"(文本:{result['statistics']['text_blocks']}, "
-                      f"表格:{result['statistics']['table_blocks']}, "
-                      f"图像:{result['statistics']['image_blocks']})")
 
 def estimate_text_length(text: str) -> int:
     """
@@ -253,6 +149,7 @@ def estimate_text_length(text: str) -> int:
         文本的字符长度
     """
     return len(text) if text else 0
+
 
 def merge_blocks_to_chunks(blocks: List[Dict[str, Any]], max_chars_per_chunk: int = 800) -> List[Dict[str, Any]]:
     """
@@ -413,6 +310,7 @@ def merge_blocks_to_chunks(blocks: List[Dict[str, Any]], max_chars_per_chunk: in
 
     return chunks
 
+
 def process_pdf_with_chunks(pdf_path: str, max_chars_per_chunk: int = 800) -> Dict[str, Any]:
     """
     处理PDF文件并生成chunks
@@ -451,240 +349,201 @@ def process_pdf_with_chunks(pdf_path: str, max_chars_per_chunk: int = 800) -> Di
 
     return result
 
-def print_chunk_summary(results: Dict[str, Any]):
-    """打印chunk处理结果的摘要"""
-    if "error" in results:
-        print(f"错误: {results['error']}")
-        return
 
-    if "chunks" not in results:
-        print("未找到chunks信息")
-        return
-
-    stats = results.get("chunk_statistics", {})
-
-    print("\n" + "="*60)
-    print("Chunk处理结果摘要")
-    print("="*60)
-    print(f"PDF文件: {results['pdf_path']}")
-    print(f"总页数: {results['total_pages']}")
-    print(f"原始块数: {results['total_blocks']}")
-    print(f"合并后chunk数: {stats.get('total_chunks', 0)}")
-    print(f"文本chunks: {stats.get('text_chunks', 0)}")
-    print(f"表格chunks: {stats.get('table_chunks', 0)}")
-    print(f"图像chunks: {stats.get('image_chunks', 0)}")
-    print(f"总字符数: {stats.get('total_chars', 0)}")
-    print(f"平均字符数/chunk: {stats.get('avg_chars_per_chunk', 0):.1f}")
-    print("="*60)
-
-    # 显示前几个chunks作为示例
-    print("\n前5个chunks示例:")
-    for i, chunk in enumerate(results["chunks"][:5]):
-        chunk_type = chunk["type"]
-        page = chunk["page"]
-        char_count = chunk.get("char_count", 0)
-
-        if chunk_type == "text":
-            content_preview = chunk["content"][:100] + "..." if len(chunk["content"]) > 100 else chunk["content"]
-            print(f"  {i+1}. [文本] 页{page}, {char_count}字符: '{content_preview}'")
-        elif chunk_type == "table":
-            rows = len(chunk["content"]) if chunk["content"] else 0
-            cols = len(chunk["content"][0]) if chunk["content"] and chunk["content"][0] else 0
-            print(f"  {i+1}. [表格] 页{page}, {rows}行×{cols}列, {char_count}字符")
-        elif chunk_type == "image":
-            image_name = chunk.get("metadata", {}).get("name", "未命名")
-            print(f"  {i+1}. [图像] 页{page}, {image_name}, {char_count}字符")
-
-def batch_process_pdfs_with_chunks(pdf_dir: str, pattern: str = "*.pdf", max_chars_per_chunk: int = 800) -> Dict[str, Any]:
+def process_pdf_with_embeddings(pdf_path: str, max_chars_per_chunk: int = 800,
+                               embedding_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
-    批量处理PDF文件并生成chunks
+    处理PDF文件并生成带embedding的chunks
 
     Args:
-        pdf_dir: PDF文件目录
-        pattern: 文件匹配模式
+        pdf_path: PDF文件路径
         max_chars_per_chunk: 每个chunk的最大字符数
+        embedding_config: embedding配置字典
 
     Returns:
-        包含所有处理结果的字典
+        包含带embedding的chunks的字典
     """
-    pdf_files = glob.glob(os.path.join(pdf_dir, pattern))
-    pdf_files.sort()  # 按文件名排序
+    # 检查embedding功能是否可用
+    if not EMBEDDING_AVAILABLE:
+        return {"error": "embedding功能不可用，请确保embedding_service.py文件存在"}
 
-    if not pdf_files:
-        print(f"在目录 {pdf_dir} 中没有找到匹配 {pattern} 的PDF文件")
-        return {"error": f"No PDF files found in {pdf_dir} matching {pattern}"}
+    # 处理PDF并生成chunks
+    result = process_pdf_with_chunks(pdf_path, max_chars_per_chunk)
 
-    print(f"找到 {len(pdf_files)} 个PDF文件:")
-    for i, pdf_file in enumerate(pdf_files, 1):
-        print(f"  {i}. {os.path.basename(pdf_file)}")
+    if "error" in result:
+        return result
 
-    all_results = {}
-    total_summary = {
-        "total_files": len(pdf_files),
-        "processed_files": 0,
-        "failed_files": 0,
-        "total_pages": 0,
-        "total_blocks": 0,
-        "total_chunks": 0,
-        "total_text_chunks": 0,
-        "total_table_chunks": 0,
-        "total_image_chunks": 0,
-        "total_chars": 0
-    }
+    # 创建embedding服务
+    try:
+        # 创建配置
+        config = EmbeddingConfig()
 
-    print("\n" + "="*60)
-    print("开始批量处理PDF文件并生成chunks")
-    print("="*60)
+        # 应用自定义配置
+        if embedding_config:
+            # 模型配置
+            if "model" in embedding_config:
+                try:
+                    config.model = EmbeddingModel(embedding_config["model"])
+                except ValueError:
+                    print(f"警告: 未知的模型 {embedding_config['model']}，使用默认模型")
 
-    for pdf_file in pdf_files:
-        filename = os.path.basename(pdf_file)
-        print(f"\n处理文件: {filename}")
+            # 本地模型配置
+            if "local_model_name" in embedding_config:
+                config.local_model_name = embedding_config["local_model_name"]
+            if "device" in embedding_config:
+                config.device = embedding_config["device"]
+            if "normalize_embeddings" in embedding_config:
+                config.normalize_embeddings = embedding_config["normalize_embeddings"]
+            if "batch_size" in embedding_config:
+                config.batch_size = embedding_config["batch_size"]
 
-        # 使用chunks处理函数
-        result = process_pdf_with_chunks(pdf_file, max_chars_per_chunk)
+        # 创建服务
+        service = create_embedding_service(config)
 
-        if "error" in result:
-            print(f"  ✗ 处理失败: {result['error']}")
-            all_results[filename] = {"error": result["error"]}
-            total_summary["failed_files"] += 1
-        else:
-            print(f"  ✓ 处理成功")
-            all_results[filename] = result
-            total_summary["processed_files"] += 1
-            total_summary["total_pages"] += result["total_pages"]
-            total_summary["total_blocks"] += result["total_blocks"]
+        # 验证配置
+        if not service.validate_config():
+            service.close()
+            return {"error": "embedding配置验证失败，请检查配置"}
 
-            # 添加chunks统计信息
-            if "chunk_statistics" in result:
-                stats = result["chunk_statistics"]
-                total_summary["total_chunks"] += stats.get("total_chunks", 0)
-                total_summary["total_text_chunks"] += stats.get("text_chunks", 0)
-                total_summary["total_table_chunks"] += stats.get("table_chunks", 0)
-                total_summary["total_image_chunks"] += stats.get("image_chunks", 0)
-                total_summary["total_chars"] += stats.get("total_chars", 0)
+        print(f"开始为 {len(result['chunks'])} 个chunks生成embedding...")
+        print(f"使用模型: {config.local_model_name}")
 
-    print("\n" + "="*60)
-    print("批量处理完成")
-    print("="*60)
+        # 为chunks生成embedding
+        chunks_with_embeddings = service.get_chunk_embeddings(result["chunks"])
 
-    return {
-        "batch_summary": total_summary,
-        "results": all_results
-    }
+        # 统计embedding结果
+        successful_embeddings = 0
+        failed_embeddings = 0
 
-def print_batch_chunks_summary(batch_results: Dict[str, Any]):
-    """
-    打印批量处理chunks结果的摘要
-
-    Args:
-        batch_results: 批量处理结果
-    """
-    if "error" in batch_results:
-        print(f"批量处理错误: {batch_results['error']}")
-        return
-
-    summary = batch_results["batch_summary"]
-
-    print("\n" + "="*60)
-    print("批量处理Chunks结果摘要")
-    print("="*60)
-    print(f"总文件数: {summary['total_files']}")
-    print(f"成功处理: {summary['processed_files']}")
-    print(f"处理失败: {summary['failed_files']}")
-    print(f"总页数: {summary['total_pages']}")
-    print(f"总块数: {summary['total_blocks']}")
-    print(f"总chunks数: {summary['total_chunks']}")
-    print(f"文本chunks总数: {summary['total_text_chunks']}")
-    print(f"表格chunks总数: {summary['total_table_chunks']}")
-    print(f"图像chunks总数: {summary['total_image_chunks']}")
-    print(f"总字符数: {summary['total_chars']}")
-    if summary['total_chunks'] > 0:
-        print(f"平均字符数/chunk: {summary['total_chars'] / summary['total_chunks']:.1f}")
-    print("="*60)
-
-    # 打印每个文件的简要信息
-    if "results" in batch_results:
-        print("\n各文件详情:")
-        for filename, result in batch_results["results"].items():
-            if "error" in result:
-                print(f"  {filename}: 失败 - {result['error']}")
+        for chunk in chunks_with_embeddings:
+            if chunk.get("embedding", {}).get("has_error", True):
+                failed_embeddings += 1
             else:
-                stats = result.get("chunk_statistics", {})
-                print(f"  {filename}: {result['total_pages']}页, {result['total_blocks']}块, "
-                      f"{stats.get('total_chunks', 0)}chunks "
-                      f"(文本:{stats.get('text_chunks', 0)}, "
-                      f"表格:{stats.get('table_chunks', 0)}, "
-                      f"图像:{stats.get('image_chunks', 0)})")
+                successful_embeddings += 1
+
+        # 更新结果
+        result["chunks"] = chunks_with_embeddings
+        result["embedding_statistics"] = {
+            "total_chunks": len(chunks_with_embeddings),
+            "successful_embeddings": successful_embeddings,
+            "failed_embeddings": failed_embeddings,
+            "embedding_model": config.local_model_name,
+            "embedding_dimensions": service._model.get_sentence_embedding_dimension() if service._model else "未知",
+            "embedding_batch_size": config.batch_size
+        }
+
+        # 关闭服务
+        service.close()
+
+        print(f"embedding完成: {successful_embeddings}成功, {failed_embeddings}失败")
+
+        return result
+
+    except Exception as e:
+        return {"error": f"embedding处理失败: {str(e)}"}
+
 
 def main():
     """主函数"""
     print("="*60)
-    print("PDF批量解析器 - 处理GEA文件夹中的所有PDF文件")
+    print("PDF解析器 - 本地embedding版本")
+    print("="*60)
+    print("功能:")
+    print("1. 解析PDF文件并提取文本、表格、图像")
+    print("2. 将提取的内容合并为chunks")
+    print("3. 使用bge-base-zh-v1.5模型为chunks生成embedding")
     print("="*60)
 
-    # 批量处理GEA文件夹中的所有PDF文件
-    batch_results = batch_process_pdfs("GEA", "*.pdf")
-
-    # 打印批量处理摘要
-    print_batch_summary(batch_results)
-
-    # 保存批量处理结果到JSON文件
-    if "error" not in batch_results:
-        save_results_to_json(batch_results, "gea_pdf_batch_results.json")
-
-        # 为每个文件单独保存结果
-        if "results" in batch_results:
-            for filename, result in batch_results["results"].items():
-                if "error" not in result:
-                    # 为每个文件创建单独的JSON文件
-                    output_filename = f"gea_{filename.replace('.pdf', '')}_results.json"
-                    save_results_to_json(result, output_filename)
-
-                    # 显示每个文件的前几个文本块作为示例
-                    print(f"\n{filename} 前3个文本块示例:")
-                    text_blocks = [b for b in result["blocks"] if b["type"] == "text"]
-                    for i, block in enumerate(text_blocks[:3]):
-                        print(f"  {i+1}. 页{block['page']}: '{block['content']}'")
-
-    print("\n" + "="*60)
-    print("Chunk合并处理 - 测试1.pdf")
-    print("="*60)
-
-    # 测试chunk合并功能
-    test_pdf = "GEA/1.pdf"
-    if os.path.exists(test_pdf):
-        chunk_result = process_pdf_with_chunks(test_pdf, max_chars_per_chunk=800)
-        print_chunk_summary(chunk_result)
-
-        # 保存chunk结果
-        if "error" not in chunk_result:
-            save_results_to_json(chunk_result, "gea_1_chunks_results.json")
-            print(f"\nChunk结果已保存到: gea_1_chunks_results.json")
-    else:
+    # 测试文件
+    test_pdf = "test.pdf"
+    if not os.path.exists(test_pdf):
         print(f"测试文件不存在: {test_pdf}")
+        print("请创建一个test.pdf文件进行测试")
+        return
+
+    # 测试基本PDF解析
+    print(f"\n1. 测试PDF解析: {test_pdf}")
+    result = extract_pdf_content(test_pdf)
+
+    if "error" in result:
+        print(f"解析失败: {result['error']}")
+    else:
+        print(f"解析成功:")
+        print(f"  总页数: {result['total_pages']}")
+        print(f"  总块数: {result['total_blocks']}")
+        print(f"  文本块: {result['statistics']['text_blocks']}")
+        print(f"  表格块: {result['statistics']['table_blocks']}")
+        print(f"  图像块: {result['statistics']['image_blocks']}")
+
+        # 保存结果
+        save_results_to_json(result, "test_pdf_results.json")
+
+    # 测试chunks处理
+    print(f"\n2. 测试chunks处理: {test_pdf}")
+    chunk_result = process_pdf_with_chunks(test_pdf, max_chars_per_chunk=800)
+
+    if "error" in chunk_result:
+        print(f"chunks处理失败: {chunk_result['error']}")
+    else:
+        stats = chunk_result.get("chunk_statistics", {})
+        print(f"chunks处理成功:")
+        print(f"  总chunks数: {stats.get('total_chunks', 0)}")
+        print(f"  文本chunks: {stats.get('text_chunks', 0)}")
+        print(f"  表格chunks: {stats.get('table_chunks', 0)}")
+        print(f"  图像chunks: {stats.get('image_chunks', 0)}")
+        print(f"  总字符数: {stats.get('total_chars', 0)}")
+        print(f"  平均字符数/chunk: {stats.get('avg_chars_per_chunk', 0):.1f}")
+
+        # 保存结果
+        save_results_to_json(chunk_result, "test_pdf_chunks_results.json")
+
+    # 测试embedding功能
+    if EMBEDDING_AVAILABLE:
+        print(f"\n3. 测试embedding功能: {test_pdf}")
+        embedding_result = process_pdf_with_embeddings(test_pdf, max_chars_per_chunk=800)
+
+        if "error" in embedding_result:
+            print(f"embedding处理失败: {embedding_result['error']}")
+            print("请确保已安装必要的依赖:")
+            print("  pip install torch transformers sentence-transformers")
+        else:
+            emb_stats = embedding_result.get("embedding_statistics", {})
+            print(f"embedding处理成功:")
+            print(f"  总chunks数: {emb_stats.get('total_chunks', 0)}")
+            print(f"  成功embedding: {emb_stats.get('successful_embeddings', 0)}")
+            print(f"  失败embedding: {emb_stats.get('failed_embeddings', 0)}")
+            print(f"  使用模型: {emb_stats.get('embedding_model', '未知')}")
+            print(f"  维度: {emb_stats.get('embedding_dimensions', '未知')}")
+
+            # 保存结果
+            save_results_to_json(embedding_result, "test_pdf_embeddings_results.json")
+
+            # 显示前几个带embedding的chunks
+            print(f"\n前3个带embedding的chunks示例:")
+            for i, chunk in enumerate(embedding_result["chunks"][:3]):
+                chunk_type = chunk["type"]
+                page = chunk["page"]
+                char_count = chunk.get("char_count", 0)
+
+                embedding_info = chunk.get("embedding", {})
+                has_embedding = not embedding_info.get("has_error", True)
+                embedding_dim = embedding_info.get("dimensions", 0)
+
+                if chunk_type == "text":
+                    content_preview = chunk["content"][:80] + "..." if len(chunk["content"]) > 80 else chunk["content"]
+                    embedding_status = f"✓ {embedding_dim}维" if has_embedding else "✗ 失败"
+                    print(f"  {i+1}. [文本] 页{page}, {char_count}字符, embedding: {embedding_status}")
+                    print(f"     内容: '{content_preview}'")
+    else:
+        print(f"\n3. embedding功能不可用")
+        print("请确保:")
+        print("  1. embedding_service.py文件存在")
+        print("  2. 安装必要的依赖: pip install torch transformers sentence-transformers")
 
     print("\n" + "="*60)
-    print("批量Chunk合并处理 - 处理所有PDF文件")
+    print("测试完成")
     print("="*60)
 
-    # 批量处理所有PDF文件并生成chunks
-    batch_chunks_results = batch_process_pdfs_with_chunks("GEA", "*.pdf", max_chars_per_chunk=800)
-
-    # 打印批量处理chunks摘要
-    print_batch_chunks_summary(batch_chunks_results)
-
-    # 保存批量处理chunks结果到JSON文件
-    if "error" not in batch_chunks_results:
-        save_results_to_json(batch_chunks_results, "gea_pdf_batch_chunks_results.json")
-
-        # 为每个文件单独保存chunks结果
-        if "results" in batch_chunks_results:
-            for filename, result in batch_chunks_results["results"].items():
-                if "error" not in result:
-                    # 为每个文件创建单独的chunks JSON文件
-                    output_filename = f"gea_{filename.replace('.pdf', '')}_chunks_results.json"
-                    save_results_to_json(result, output_filename)
-                    print(f"  ✓ {filename} chunks结果已保存到: {output_filename}")
 
 if __name__ == "__main__":
     main()
