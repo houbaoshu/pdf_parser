@@ -9,7 +9,8 @@ import pdfplumber
 import json
 import os
 import glob
-from typing import List, Dict, Any
+import re
+from typing import List, Dict, Any, Tuple
 
 def extract_pdf_content(pdf_path: str) -> Dict[str, Any]:
     """
@@ -241,6 +242,281 @@ def print_batch_summary(batch_results: Dict[str, Any]):
                       f"表格:{result['statistics']['table_blocks']}, "
                       f"图像:{result['statistics']['image_blocks']})")
 
+def estimate_tokens(text: str) -> int:
+    """
+    估算文本的token数量
+
+    Args:
+        text: 输入文本
+
+    Returns:
+        估算的token数量
+    """
+    if not text:
+        return 0
+
+    # 简单估算方法：
+    # 1. 对于英文：一个单词 ≈ 1.3个tokens
+    # 2. 对于中文：一个汉字 ≈ 2个tokens
+    # 3. 对于标点符号和数字：每个字符 ≈ 0.5个tokens
+
+    # 统计中文字符
+    chinese_chars = len(re.findall(r'[一-鿿]', text))
+
+    # 统计英文字符（排除中文字符）
+    english_text = re.sub(r'[一-鿿]', '', text)
+    # 简单的单词分割：按空格和非字母数字字符分割
+    english_words = re.findall(r'\b\w+\b', english_text)
+
+    # 统计其他字符（标点、数字等）
+    other_chars = len(text) - chinese_chars - sum(len(word) for word in english_words)
+
+    # 计算token估算
+    tokens = chinese_chars * 2 + len(english_words) * 1.3 + other_chars * 0.5
+
+    return int(tokens + 0.5)  # 四舍五入到最接近的整数
+
+def merge_blocks_to_chunks(blocks: List[Dict[str, Any]], max_tokens_per_chunk: int = 400) -> List[Dict[str, Any]]:
+    """
+    将blocks合并为chunks
+
+    Args:
+        blocks: 原始blocks列表
+        max_tokens_per_chunk: 每个chunk的最大token数
+
+    Returns:
+        合并后的chunks列表
+    """
+    chunks = []
+    current_page = None
+    current_text_chunk = []
+    current_chunk_tokens = 0
+
+    # 按页面和顺序处理blocks
+    for block in blocks:
+        page = block.get("page", 1)
+
+        # 如果页面变化，完成当前的text chunk
+        if current_page is not None and page != current_page and current_text_chunk:
+            # 创建text chunk
+            chunk_content = " ".join([b["content"] for b in current_text_chunk])
+            chunk = {
+                "type": "text",
+                "page": current_page,
+                "content": chunk_content,
+                "token_count": current_chunk_tokens,
+                "block_count": len(current_text_chunk),
+                "block_indices": [i for i, b in enumerate(blocks) if b in current_text_chunk],
+                "blocks": current_text_chunk
+            }
+            chunks.append(chunk)
+            current_text_chunk = []
+            current_chunk_tokens = 0
+
+        current_page = page
+
+        # 处理不同类型的block
+        block_type = block.get("type", "text")
+
+        if block_type == "text":
+            text_content = block.get("content", "")
+            text_tokens = estimate_tokens(text_content)
+
+            # 如果当前chunk为空，直接添加
+            if not current_text_chunk:
+                current_text_chunk.append(block)
+                current_chunk_tokens = text_tokens
+            # 如果添加当前block后不超过最大token数，添加到当前chunk
+            elif current_chunk_tokens + text_tokens <= max_tokens_per_chunk:
+                current_text_chunk.append(block)
+                current_chunk_tokens += text_tokens
+            # 如果超过最大token数，完成当前chunk并开始新的chunk
+            else:
+                # 完成当前chunk
+                chunk_content = " ".join([b["content"] for b in current_text_chunk])
+                chunk = {
+                    "type": "text",
+                    "page": page,
+                    "content": chunk_content,
+                    "token_count": current_chunk_tokens,
+                    "block_count": len(current_text_chunk),
+                    "block_indices": [i for i, b in enumerate(blocks) if b in current_text_chunk],
+                    "blocks": current_text_chunk
+                }
+                chunks.append(chunk)
+
+                # 开始新的chunk
+                current_text_chunk = [block]
+                current_chunk_tokens = text_tokens
+
+        elif block_type == "table":
+            # 完成当前的text chunk（如果有）
+            if current_text_chunk:
+                chunk_content = " ".join([b["content"] for b in current_text_chunk])
+                chunk = {
+                    "type": "text",
+                    "page": page,
+                    "content": chunk_content,
+                    "token_count": current_chunk_tokens,
+                    "block_count": len(current_text_chunk),
+                    "block_indices": [i for i, b in enumerate(blocks) if b in current_text_chunk],
+                    "blocks": current_text_chunk
+                }
+                chunks.append(chunk)
+                current_text_chunk = []
+                current_chunk_tokens = 0
+
+            # 创建table chunk
+            table_content = block.get("content", [])
+            # 将表格内容转换为文本
+            table_text = ""
+            for row in table_content:
+                if row:
+                    row_text = " | ".join([str(cell) if cell is not None else "" for cell in row])
+                    table_text += row_text + "\n"
+
+            table_tokens = estimate_tokens(table_text)
+            chunk = {
+                "type": "table",
+                "page": page,
+                "table_index": block.get("table_index", 0),
+                "content": table_content,
+                "text_content": table_text.strip(),
+                "token_count": table_tokens,
+                "block_indices": [blocks.index(block)],
+                "blocks": [block],
+                "metadata": block.get("metadata", {})
+            }
+            chunks.append(chunk)
+
+        elif block_type == "image":
+            # 完成当前的text chunk（如果有）
+            if current_text_chunk:
+                chunk_content = " ".join([b["content"] for b in current_text_chunk])
+                chunk = {
+                    "type": "text",
+                    "page": page,
+                    "content": chunk_content,
+                    "token_count": current_chunk_tokens,
+                    "block_count": len(current_text_chunk),
+                    "block_indices": [i for i, b in enumerate(blocks) if b in current_text_chunk],
+                    "blocks": current_text_chunk
+                }
+                chunks.append(chunk)
+                current_text_chunk = []
+                current_chunk_tokens = 0
+
+            # 创建image chunk
+            chunk = {
+                "type": "image",
+                "page": page,
+                "image_index": block.get("image_index", 0),
+                "content": f"图像: {block.get('metadata', {}).get('name', '未命名')}",
+                "token_count": 10,  # 图像chunk固定token数
+                "block_indices": [blocks.index(block)],
+                "blocks": [block],
+                "metadata": block.get("metadata", {})
+            }
+            chunks.append(chunk)
+
+    # 处理最后一个text chunk（如果有）
+    if current_text_chunk:
+        chunk_content = " ".join([b["content"] for b in current_text_chunk])
+        chunk = {
+            "type": "text",
+            "page": current_page if current_page else 1,
+            "content": chunk_content,
+            "token_count": current_chunk_tokens,
+            "block_count": len(current_text_chunk),
+            "block_indices": [i for i, b in enumerate(blocks) if b in current_text_chunk],
+            "blocks": current_text_chunk
+        }
+        chunks.append(chunk)
+
+    return chunks
+
+def process_pdf_with_chunks(pdf_path: str, max_tokens_per_chunk: int = 400) -> Dict[str, Any]:
+    """
+    处理PDF文件并生成chunks
+
+    Args:
+        pdf_path: PDF文件路径
+        max_tokens_per_chunk: 每个chunk的最大token数
+
+    Returns:
+        包含chunks的字典
+    """
+    # 提取原始blocks
+    result = extract_pdf_content(pdf_path)
+
+    if "error" in result:
+        return result
+
+    # 合并blocks为chunks
+    chunks = merge_blocks_to_chunks(result["blocks"], max_tokens_per_chunk)
+
+    # 统计信息
+    text_chunks = [c for c in chunks if c["type"] == "text"]
+    table_chunks = [c for c in chunks if c["type"] == "table"]
+    image_chunks = [c for c in chunks if c["type"] == "image"]
+
+    # 更新结果
+    result["chunks"] = chunks
+    result["chunk_statistics"] = {
+        "total_chunks": len(chunks),
+        "text_chunks": len(text_chunks),
+        "table_chunks": len(table_chunks),
+        "image_chunks": len(image_chunks),
+        "total_tokens": sum(c.get("token_count", 0) for c in chunks),
+        "avg_tokens_per_chunk": sum(c.get("token_count", 0) for c in chunks) / len(chunks) if chunks else 0
+    }
+
+    return result
+
+def print_chunk_summary(results: Dict[str, Any]):
+    """打印chunk处理结果的摘要"""
+    if "error" in results:
+        print(f"错误: {results['error']}")
+        return
+
+    if "chunks" not in results:
+        print("未找到chunks信息")
+        return
+
+    stats = results.get("chunk_statistics", {})
+
+    print("\n" + "="*60)
+    print("Chunk处理结果摘要")
+    print("="*60)
+    print(f"PDF文件: {results['pdf_path']}")
+    print(f"总页数: {results['total_pages']}")
+    print(f"原始块数: {results['total_blocks']}")
+    print(f"合并后chunk数: {stats.get('total_chunks', 0)}")
+    print(f"文本chunks: {stats.get('text_chunks', 0)}")
+    print(f"表格chunks: {stats.get('table_chunks', 0)}")
+    print(f"图像chunks: {stats.get('image_chunks', 0)}")
+    print(f"总tokens: {stats.get('total_tokens', 0)}")
+    print(f"平均tokens/chunk: {stats.get('avg_tokens_per_chunk', 0):.1f}")
+    print("="*60)
+
+    # 显示前几个chunks作为示例
+    print("\n前5个chunks示例:")
+    for i, chunk in enumerate(results["chunks"][:5]):
+        chunk_type = chunk["type"]
+        page = chunk["page"]
+        token_count = chunk.get("token_count", 0)
+
+        if chunk_type == "text":
+            content_preview = chunk["content"][:100] + "..." if len(chunk["content"]) > 100 else chunk["content"]
+            print(f"  {i+1}. [文本] 页{page}, {token_count}tokens: '{content_preview}'")
+        elif chunk_type == "table":
+            rows = len(chunk["content"]) if chunk["content"] else 0
+            cols = len(chunk["content"][0]) if chunk["content"] and chunk["content"][0] else 0
+            print(f"  {i+1}. [表格] 页{page}, {rows}行×{cols}列, {token_count}tokens")
+        elif chunk_type == "image":
+            image_name = chunk.get("metadata", {}).get("name", "未命名")
+            print(f"  {i+1}. [图像] 页{page}, {image_name}, {token_count}tokens")
+
 def main():
     """主函数"""
     print("="*60)
@@ -270,6 +546,23 @@ def main():
                     text_blocks = [b for b in result["blocks"] if b["type"] == "text"]
                     for i, block in enumerate(text_blocks[:3]):
                         print(f"  {i+1}. 页{block['page']}: '{block['content']}'")
+
+    print("\n" + "="*60)
+    print("Chunk合并处理 - 测试1.pdf")
+    print("="*60)
+
+    # 测试chunk合并功能
+    test_pdf = "GEA/1.pdf"
+    if os.path.exists(test_pdf):
+        chunk_result = process_pdf_with_chunks(test_pdf, max_tokens_per_chunk=400)
+        print_chunk_summary(chunk_result)
+
+        # 保存chunk结果
+        if "error" not in chunk_result:
+            save_results_to_json(chunk_result, "gea_1_chunks_results.json")
+            print(f"\nChunk结果已保存到: gea_1_chunks_results.json")
+    else:
+        print(f"测试文件不存在: {test_pdf}")
 
 if __name__ == "__main__":
     main()
