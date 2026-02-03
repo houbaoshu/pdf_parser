@@ -2,11 +2,25 @@
 
 # 核心依赖
 pdfplumber>=0.10.3
+numpy>=1.24.0
 
 # 本地embedding功能依赖
 torch>=2.0.0
 transformers>=4.35.0
 sentence-transformers>=2.2.0
+
+# 向量数据库
+chromadb>=0.4.0
+
+# LLM
+openai>=1.0.0
+
+# 进度条
+tqdm>=4.65.0
+
+# Web界面
+streamlit>=1.28.0
+streamlit-chat>=0.1.1
 
 # 开发依赖
 pytest>=7.4.0
