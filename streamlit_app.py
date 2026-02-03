@@ -25,42 +25,76 @@ st.set_page_config(
 st.markdown("""
 <style>
     .main-header {
-        font-size: 2.5rem;
-        font-weight: bold;
-        color: #1f77b4;
+        font-size: 3rem;
+        font-weight: 800;
+        background: linear-gradient(90deg, #1f77b4, #00d2ff);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
         text-align: center;
-        padding: 1rem 0;
+        padding: 1.5rem 0;
+        margin-bottom: 1rem;
     }
     .sub-header {
-        font-size: 1.2rem;
-        color: #666;
+        font-size: 1.1rem;
+        color: #555;
         text-align: center;
-        padding-bottom: 1rem;
+        margin-top: -1.5rem;
+        margin-bottom: 2rem;
+        font-style: italic;
     }
     .source-box {
-        background-color: #f0f2f6;
-        border-left: 4px solid #1f77b4;
-        padding: 1rem;
-        margin: 0.5rem 0;
-        border-radius: 0.3rem;
+        background: rgba(255, 255, 255, 0.7);
+        backdrop-filter: blur(10px);
+        border-right: 1px solid rgba(255, 255, 255, 0.3);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+        border-left: 5px solid #1f77b4;
+        padding: 1.2rem;
+        margin: 1rem 0;
+        border-radius: 0.8rem;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        transition: transform 0.2s ease;
+    }
+    .source-box:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 12px rgba(0,0,0,0.1);
     }
     .similarity-high {
-        color: #28a745;
-        font-weight: bold;
+        background-color: #d4edda;
+        color: #155724;
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.3rem;
+        font-weight: 600;
     }
     .similarity-medium {
-        color: #ffc107;
-        font-weight: bold;
+        background-color: #fff3cd;
+        color: #856404;
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.3rem;
+        font-weight: 600;
     }
     .similarity-low {
-        color: #dc3545;
-        font-weight: bold;
+        background-color: #f8d7da;
+        color: #721c24;
+        padding: 0.2rem 0.5rem;
+        border-radius: 0.3rem;
+        font-weight: 600;
     }
     .stat-box {
-        background-color: #e8f4f8;
+        background: linear-gradient(135deg, #e8f4f8 0%, #d1e9f0 100%);
+        padding: 1.2rem;
+        border-radius: 1rem;
+        margin: 0.8rem 0;
+        border: 1px solid rgba(31, 119, 180, 0.2);
+    }
+    .stChatMessage {
+        border-radius: 1.5rem;
         padding: 1rem;
-        border-radius: 0.5rem;
-        margin: 0.5rem 0;
+        margin-bottom: 1rem;
+    }
+    .stExpander {
+        border: none !important;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        border-radius: 0.8rem !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -148,6 +182,16 @@ def main():
     # 侧边栏配置
     with st.sidebar:
         st.header("⚙️ 配置选项")
+        
+        # API设置
+        with st.expander("🔑 API 设置", expanded=False):
+            api_key = st.text_input("OpenAI API Key", type="password", value=os.getenv("OPENAI_API_KEY", ""))
+            if api_key:
+                os.environ["OPENAI_API_KEY"] = api_key
+                # 如果Agent已经初始化但Key变了，重新初始化
+                if 'agent' in st.session_state and st.session_state.agent.client.api_key != api_key:
+                    st.session_state.agent = None
+                    st.rerun()
 
         # 检索配置
         st.subheader("检索设置")

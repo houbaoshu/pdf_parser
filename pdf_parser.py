@@ -43,25 +43,21 @@ def extract_pdf_content(pdf_path: str) -> Dict[str, Any]:
             for page_idx, page in enumerate(pdf.pages):
                 page_number = page_idx + 1
 
-                # 1. 提取文本内容
-                words = page.extract_words(use_text_flow=True)
-                for word_obj in words:
+                # 1. 提取文本内容 (优化：直接提取整页文本，避免逐词解析的开销)
+                page_text = page.extract_text()
+                if page_text:
                     block = {
                         "page": page_number,
                         "type": "text",
-                        "bbox": [word_obj["x0"], word_obj["top"],
-                                word_obj["x1"], word_obj["bottom"]],
-                        "content": word_obj["text"],
+                        "bbox": page.bbox,
+                        "content": page_text.strip(),
                         "metadata": {
-                            "x0": word_obj["x0"],
-                            "top": word_obj["top"],
-                            "x1": word_obj["x1"],
-                            "bottom": word_obj["bottom"],
-                            "width": word_obj["x1"] - word_obj["x0"],
-                            "height": word_obj["bottom"] - word_obj["top"]
+                            "char_count": len(page_text)
                         }
                     }
                     all_blocks.append(block)
+                else:
+                    page_text = ""
 
                 # 2. 提取表格
                 tables = page.extract_tables()
@@ -99,7 +95,8 @@ def extract_pdf_content(pdf_path: str) -> Dict[str, Any]:
                     all_blocks.append(block)
 
                 # 显示当前页的提取进度
-                print(f"  第{page_number}页: {len(words)}个单词, {len(tables)}个表格, {len(page.images)}个图像")
+                text_len = len(page_text) if page_text else 0
+                print(f"  第{page_number}页: {text_len}个字符, {len(tables)}个表格, {len(page.images)}个图像")
 
         # 统计信息
         text_blocks = [b for b in all_blocks if b["type"] == "text"]

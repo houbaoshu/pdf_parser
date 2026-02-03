@@ -283,7 +283,7 @@ class GEARAGAgent:
 
         lines = []
         for i, row in enumerate(table_data[:max_rows]):
-            row_str = " | ".join([str(cell) if cell else "" for cell in row])
+            row_str = " | ".join([str(cell) if cell is not None else "" for cell in row])
             lines.append(row_str)
 
         if len(table_data) > max_rows:
